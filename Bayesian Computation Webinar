@@ -1,0 +1,81 @@
+#----------------------------------------------
+# R code for Bayesian Computation Webinar
+# Jim Albert - June 12, 2014
+#----------------------------------------------
+
+library(foreign)
+cdata <- read.dta("http://www.ats.ucla.edu/stat/data/crime.dta")
+summary(ols <- lm(crime ~ poverty + single, data = cdata))
+
+# all-pairs scatterplot indicates problems using least-squares
+
+pairs(cdata[, c("crime", "poverty", "single")])
+
+# suppose we replace normal error distribution with t(4)
+# density of y is t with location x beta and scale sigma
+
+# define log posterior on (beta1, beta2, beta3, log(sigma))
+# with uniform prior
+
+regpost <- function(theta, data){
+  beta <- array(theta[1:3], 3, 1)
+  sigma <- exp(theta[4])
+  y <- data[, "crime"]
+  x <- as.matrix(cbind(1,
+                       data[, c("poverty", "single")]))
+  sum(dt((y - x %*% beta) / sigma, df=4, log=TRUE) -
+        log(sigma))
+}
+
+library(LearnBayes)
+
+# find normal approximation
+
+laplace.fit <- laplace(regpost,
+                       c(ols$coef, log(245)),
+                       cdata)
+laplace.fit
+
+# set up random walk metropolis using inputs from
+# laplace fit
+
+rw.fit <- rwmetrop(regpost,
+                   list(var=laplace.fit$var, scale=1.5),
+                   start=laplace.fit$mode,
+                   10000,
+                   cdata)
+
+# illustrate MCMC diagnostics using coda package
+
+library(coda)
+rw.fit$par <- data.frame(rw.fit$par)
+names(rw.fit$par) <- c("beta1", "beta2", "beta3", "log sigma")
+
+mcmc.obj <- mcmc(rw.fit$par)
+xyplot(mcmc.obj)
+acfplot(mcmc.obj)
+densityplot(mcmc.obj)
+
+summary(mcmc.obj)
+
+# illustrate difference between inference and prediction
+# interested in crime for hypothetical state with
+# poverty = 20 and single = 12
+
+inference.prediction <- function(bayesfit, covariate){
+  beta <- as.matrix(bayesfit$par[, -4])
+  sigma <- exp(bayesfit$par[, 4])
+  covariate <- matrix(covariate, length(covariate), 1)
+  lin.pred <- beta %*% covariate
+  m <- length(lin.pred)
+  pred.y <- lin.pred + rt(m, 4) * sigma
+  list(lin.pred=lin.pred, pred.y=pred.y)
+}
+
+covariate <- c(1, 20, 12)
+I <- inference.prediction(rw.fit, covariate)
+d <- rbind(data.frame(Value=I$lin.pred, Type="Linear Predictor"),
+           data.frame(Value=I$pred.y, Type="Predicted Y"))
+library(ggplot2)
+print(ggplot(d, aes(Value, color=Type)) + geom_density() +
+        scale_x_continuous(limits=c(0, 2000)))
